@@ -1,0 +1,18 @@
+Resumen de tiempos Fig. 1:
+  N0=2: 1 h 0 min 16.0 s
+  N0=4: 48 min 23.9 s
+  N0=12: 43 min 5.1 s
+
+Tiempo total de ejecución del script: 2 h 32 min 42.6 s
+
+
+
+Tiempo total: 18 h 18 min 13.0 s
+Tiempo promedio por combinación: 2 min 9.2 s
+Combinación más lenta: 9 min 4.6 s
+Combinación más rápida: 47.60 s
+
+Resultados Fig. 2 guardados en: figure_2_results.txt
+Tiempo total Fig. 2: 20 h 51 min 41.8 s
+
+Tiempo total de ejecución del script: 20 h 51 min 41.8 s

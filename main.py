@@ -1,9 +1,10 @@
+import os
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from tqdm import tqdm
-
+       
 
 # ============================================================
 # Utilidades de tiempo
@@ -28,31 +29,19 @@ def format_seconds(seconds):
 # Cooperadores A vs defectores B
 # ============================================================
 
-def fitness_A(x, b=3.0, c=1.0, s=0.05):
-    """
-    f_A(x) = 1 + s[(b-c)x - c(1-x)]
-    """
+def fitness_A(x, b=3.0, c=1.0, s=0.05): # f_A(x)
     return 1.0 + s * ((b - c) * x - c * (1.0 - x))
 
 
-def fitness_B(x, b=3.0, s=0.05):
-    """
-    f_B(x) = 1 + s*b*x
-    """
+def fitness_B(x, b=3.0, s=0.05): # f_B(x)
     return 1.0 + s * b * x
 
 
-def global_growth(x, p=10.0):
-    """
-    g(x) = 1 + p*x
-    """
+def global_growth(x, p=10.0): #g(x)
     return 1.0 + p * x
 
 
-def death_rate_global(N, K=100.0):
-    """
-    d(N) = N/K
-    """
+def death_rate_global(N, K=100.0): # d(N)
     return N / K
 
 
@@ -121,11 +110,9 @@ def gillespie_one_run(
         if total_rate <= 0:
             break
 
-        # Tiempo hasta el próximo evento
         dt = rng.exponential(1.0 / total_rate)
         t += dt
 
-        # Elegimos evento
         event = rng.choice(4, p=rates / total_rate)
 
         if event == 0:
@@ -326,21 +313,125 @@ def cooperation_time(t, x):
 
 
 # ============================================================
+# Guardado/carga de resultados Fig. 1 en .txt
+# ============================================================
+
+def save_figure_1_results_txt(
+    filename,
+    results,
+    deterministic_results,
+    timings,
+    params,
+    total_elapsed,
+):
+    """
+    Guarda los resultados de Fig. 1 en un .txt.
+
+    Columnas:
+    N0, t, mean_N_stochastic, mean_x_stochastic, N_deterministic, x_deterministic, elapsed_for_N0
+    """
+    rows = []
+
+    for N0 in sorted(results.keys()):
+        t, mean_N, mean_x = results[N0]
+        td, Nd, xd = deterministic_results[N0]
+        elapsed = timings.get(N0, np.nan)
+
+        if not np.allclose(t, td):
+            raise ValueError(f"El grid temporal estocástico y determinista no coincide para N0={N0}")
+
+        for k in range(len(t)):
+            rows.append(
+                [
+                    N0,
+                    t[k],
+                    mean_N[k],
+                    mean_x[k],
+                    Nd[k],
+                    xd[k],
+                    elapsed,
+                ]
+            )
+
+    rows = np.array(rows, dtype=float)
+
+    header = (
+        "Resultados Fig. 1\n"
+        f"x0={params['x0']}\n"
+        f"b={params['b']}\n"
+        f"c={params['c']}\n"
+        f"s={params['s']}\n"
+        f"K={params['K']}\n"
+        f"p={params['p']}\n"
+        f"t_max={params['t_max']}\n"
+        f"n_runs={params['n_runs']}\n"
+        f"n_points={params['n_points']}\n"
+        f"total_elapsed_seconds={total_elapsed}\n"
+        "columns: N0 t mean_N_stochastic mean_x_stochastic N_deterministic x_deterministic elapsed_for_N0"
+    )
+
+    np.savetxt(filename, rows, header=header)
+    print(f"\nResultados guardados en: {filename}")
+
+
+def load_figure_1_results_txt(filename):
+    """
+    Carga resultados previamente guardados de Fig. 1.
+
+    Devuelve:
+    results, deterministic_results, timings
+    """
+    data = np.loadtxt(filename)
+
+    results = {}
+    deterministic_results = {}
+    timings = {}
+
+    N0_values = np.unique(data[:, 0]).astype(int)
+
+    for N0 in N0_values:
+        sub = data[data[:, 0] == N0]
+
+        t = sub[:, 1]
+        mean_N = sub[:, 2]
+        mean_x = sub[:, 3]
+        Nd = sub[:, 4]
+        xd = sub[:, 5]
+        elapsed = sub[0, 6]
+
+        results[N0] = (t, mean_N, mean_x)
+        deterministic_results[N0] = (t, Nd, xd)
+        timings[N0] = elapsed
+
+    print(f"\nResultados cargados desde: {filename}")
+
+    return results, deterministic_results, timings
+
+
+# ============================================================
 # Figura 1 aproximada
 # ============================================================
 
-def reproduce_figure_1():
+def reproduce_figure_1(
+    use_cache=True,
+    force_recompute=False,
+    cache_filename="figure_1_results.txt",
+):
     """
-    Reproduce aproximadamente la Fig. 1 del paper.
+    Fig. 1 modificada:
 
-    Parámetros del paper:
-    x0 = 0.5
-    b = 3
-    c = 1
-    s = 0.05
-    K = 100
-    p = 10
-    N0 = 2, 4, 12
+    Fig. 1a:
+        Subplot de 3 figuras, una para cada N0.
+        En cada subplot compara N(t) estocástico vs N(t) determinista.
+        Una única leyenda global.
+
+    Fig. 1b:
+        Tamaño poblacional N(t) vs tiempo para las estocásticas.
+
+    Fig. 1c:
+        Fracción de cooperadores x(t), equivalente a la anterior Fig. 1b.
+
+    Además guarda/carga resultados en un .txt para evitar recomputar.
     """
     total_start = time.perf_counter()
 
@@ -358,80 +449,188 @@ def reproduce_figure_1():
 
     N0_values = [2, 4, 12]
 
-    results = {}
-    timings = {}
+    if use_cache and (not force_recompute) and os.path.exists(cache_filename):
+        results, deterministic_results, timings = load_figure_1_results_txt(cache_filename)
+    else:
+        results = {}
+        deterministic_results = {}
+        timings = {}
 
-    print("Iniciando simulación de Fig. 1...")
-    print(f"Corridas por cada N0: {params['n_runs']}")
+        print("Iniciando simulación de Fig. 1...")
+        print(f"Corridas por cada N0: {params['n_runs']}")
 
-    for N0 in tqdm(N0_values, desc="Valores de N0", unit="N0"):
-        t, mean_N, mean_x, elapsed = ensemble_simulation(
-            N0=N0,
-            seed=100 + N0,
-            show_progress=True,
-            progress_desc=f"Simulando N0={N0}",
-            **params,
+        for N0 in tqdm(N0_values, desc="Valores de N0", unit="N0"):
+            t, mean_N, mean_x, elapsed = ensemble_simulation(
+                N0=N0,
+                seed=100 + N0,
+                show_progress=True,
+                progress_desc=f"Simulando N0={N0}",
+                **params,
+            )
+
+            results[N0] = (t, mean_N, mean_x)
+            timings[N0] = elapsed
+
+            td, Nd, xd = deterministic_solution(
+                N0=N0,
+                x0=params["x0"],
+                b=params["b"],
+                c=params["c"],
+                s=params["s"],
+                K=params["K"],
+                p=params["p"],
+                t_max=params["t_max"],
+                n_points=params["n_points"],
+            )
+
+            deterministic_results[N0] = (td, Nd, xd)
+
+        total_elapsed_so_far = time.perf_counter() - total_start
+
+        save_figure_1_results_txt(
+            filename=cache_filename,
+            results=results,
+            deterministic_results=deterministic_results,
+            timings=timings,
+            params=params,
+            total_elapsed=total_elapsed_so_far,
         )
 
-        results[N0] = (t, mean_N, mean_x)
-        timings[N0] = elapsed
-
-    print("Calculando solución determinista para N0=4...")
-
-    td, Nd, xd = deterministic_solution(
-        N0=4,
-        x0=params["x0"],
-        b=params["b"],
-        c=params["c"],
-        s=params["s"],
-        K=params["K"],
-        p=params["p"],
-        t_max=params["t_max"],
-        n_points=params["n_points"],
+    # --------------------------------------------------------
+    # Fig. 1a:
+    # Subplot de 3 figuras, una por N0.
+    # Compara stochastic vs determinista para N(t).
+    # Una única leyenda.
+    # --------------------------------------------------------
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(10, 8),
+        sharex=True,
+        sharey=True,
     )
 
+    # axes_flat[0], axes_flat[1], axes_flat[2] -> subplots para N0
+    # axes_flat[3] -> panel solo para la leyenda
+    axes_flat = axes.ravel()
+
+    legend_handles = []
+    legend_labels = []
+
+    for i, (ax, N0) in enumerate(zip(axes_flat[:3], N0_values)):
+        t, mean_N, mean_x = results[N0]
+        td, Nd, xd = deterministic_results[N0]
+
+        line_stoch, = ax.plot(
+            t,
+            mean_N,
+            linewidth=2,
+            label="Stochastic",
+        )
+
+        line_det, = ax.plot(
+            td,
+            Nd,
+            "k--",
+            linewidth=2,
+            label="Deterministic",
+        )
+
+        ax.axhline(
+            params["K"],
+            linestyle=":",
+            color="black",
+            linewidth=1,
+            alpha=0.8,
+        )
+
+        ax.set_title(fr"$N_0 = {N0}$")
+        ax.set_xlabel("Time t")
+        ax.set_ylabel("Population size N")
+        ax.grid(alpha=0.25)
+
+        # Guardamos los handles solo una vez
+        if i == 0:
+            legend_handles = [line_stoch, line_det]
+            legend_labels = ["Stochastic", "Deterministic"]
+
+    # Cuarto panel: solo leyenda
+    legend_ax = axes_flat[3]
+    legend_ax.axis("off")
+
+    legend_ax.legend(
+        legend_handles,
+        legend_labels,
+        loc="center",
+        frameon=True,
+        fontsize=15,
+    )
+
+    fig.suptitle("Overshoot in the population size", fontsize=16)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig("Fig_1a.png", dpi=1200, bbox_inches="tight")
+    plt.show()
+
     # --------------------------------------------------------
-    # Fig. 1a: tamaño poblacional
+    # Fig. 1b:
+    # Tamaño poblacional N(t) vs tiempo para las estocásticas.
     # --------------------------------------------------------
     plt.figure(figsize=(7, 4))
 
     for N0 in N0_values:
         t, mean_N, mean_x = results[N0]
-        plt.plot(t, mean_N, label=f"Estocástico N0={N0}")
+        plt.plot(t, mean_N, linewidth=2, label=fr"$N_0={N0}$")
 
-    plt.plot(td, Nd, "k--", label="Determinista N0=4")
     plt.axhline(params["K"], linestyle=":", color="black", label="K")
 
-    plt.xlabel("tiempo t")
-    plt.ylabel("tamaño poblacional N")
-    plt.title("Fig. 1a aproximada: tamaño poblacional promedio")
+    plt.xlabel("Time t")
+    plt.ylabel("Population size N")
+    plt.title("Average population size over time")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("figure_1a.png", dpi=1200)
+    plt.savefig("Fig_1b.png", dpi=1200)
     plt.show()
-    
+
     # --------------------------------------------------------
-    # Fig. 1b: fracción de cooperadores
+    # Fig. 1c:
+    # Fracción de cooperadores x(t).
     # --------------------------------------------------------
     plt.figure(figsize=(7, 4))
 
     for N0 in N0_values:
         t, mean_N, mean_x = results[N0]
         tc = cooperation_time(t, mean_x)
-        plt.plot(t, mean_x, label=f"Estocástico N0={N0}, tc≈{tc:.2f}")
+
+        line, = plt.plot(
+            t,
+            mean_x,
+            linewidth=2,
+            label=fr"$N_0={N0}$, $t_c \approx {tc:.2f}$",
+        )
+
+        color = line.get_color() # Tomamos el color de N0
 
         if tc > 0:
-            plt.axvline(tc, linestyle=":", alpha=0.5)
+            plt.axvline(
+                tc,
+                linestyle=":",
+                alpha=0.7,
+                color=color,
+            )
 
-    plt.plot(td, xd, "k--", label="Determinista N0=4")
-    plt.axhline(params["x0"], linestyle=":", color="black", label="x0")
+    # Agrego solución determinista N0=4 como en el código anterior
+    td, Nd, xd = deterministic_results[4]
 
-    plt.xlabel("tiempo t")
-    plt.ylabel("fracción de cooperadores x")
-    plt.title("Fig. 1b aproximada: aumento transitorio de cooperación")
+    plt.plot(td, xd, "k--", linewidth=2, label=r"Deterministic $N_0=4$")
+    plt.axhline(params["x0"], linestyle=":", color="black", label=r"$x_0$")
+
+    plt.xlabel("Time t")
+    plt.ylabel("Cooperation fraction x")
+    plt.title("Transient increase of cooperation")
     plt.legend()
     plt.tight_layout()
-    plt.savefig("figure_1b.png", dpi=1200)
+    plt.savefig("Fig_1c.png", dpi=1200)
     plt.show()
 
     total_elapsed = time.perf_counter() - total_start
@@ -440,11 +639,78 @@ def reproduce_figure_1():
     for N0, elapsed in timings.items():
         print(f"  N0={N0}: {format_seconds(elapsed)}")
 
-    print(f"Tiempo total Fig. 1: {format_seconds(total_elapsed)}")
+    return results, deterministic_results, timings
 
-    return results, timings
+# ============================================================
+# Guardado/carga de resultados Fig. 2 en .txt
+# ============================================================
+
+def save_figure_2_results_txt(
+    filename,
+    N0_values,
+    s_values,
+    tc_matrix,
+    timing_matrix,
+    total_elapsed,
+):
+    """
+    Guarda los resultados de Fig. 2 en un .txt.
+
+    Columnas:
+    s, N0, tc, elapsed_for_combination
+    """
+    rows = []
+
+    for i, s in enumerate(s_values):
+        for j, N0 in enumerate(N0_values):
+            rows.append(
+                [
+                    s,
+                    N0,
+                    tc_matrix[i, j],
+                    timing_matrix[i, j],
+                ]
+            )
+
+    rows = np.array(rows, dtype=float)
+
+    header = (
+        "Resultados Fig. 2\n"
+        f"total_elapsed_seconds={total_elapsed}\n"
+        "columns: s N0 tc elapsed_for_combination"
+    )
+
+    np.savetxt(filename, rows, header=header)
+    print(f"\nResultados Fig. 2 guardados en: {filename}")
 
 
+def load_figure_2_results_txt(filename):
+    """
+    Carga resultados previamente guardados de Fig. 2.
+
+    Devuelve:
+    N0_values, s_values, tc_matrix, timing_matrix
+    """
+    data = np.loadtxt(filename)
+
+    s_values = np.unique(data[:, 0])
+    N0_values = np.unique(data[:, 1]).astype(int)
+
+    tc_matrix = np.zeros((len(s_values), len(N0_values)))
+    timing_matrix = np.zeros((len(s_values), len(N0_values)))
+
+    for row in data:
+        s, N0, tc, elapsed = row
+
+        i = np.where(np.isclose(s_values, s))[0][0]
+        j = np.where(N0_values == int(N0))[0][0]
+
+        tc_matrix[i, j] = tc
+        timing_matrix[i, j] = elapsed
+
+    print(f"\nResultados Fig. 2 cargados desde: {filename}")
+
+    return N0_values, s_values, tc_matrix, timing_matrix
 # ============================================================
 # Figura 2 aproximada
 # ============================================================
@@ -530,17 +796,37 @@ def scan_cooperation_time(
     return N0_values, s_values, tc_matrix, timing_matrix
 
 
-def reproduce_figure_2():
+def reproduce_figure_2(
+    use_cache=True,
+    force_recompute=False,
+    cache_filename="figure_2_results.txt",
+):
     """
     Reproduce aproximadamente la Fig. 2 del paper.
 
-    Ojo:
-    Esto puede tardar bastante. Para probar rápido, bajá n_runs,
-    achicá N0_values o achicá s_values.
+    Guarda/carga resultados en un .txt para no recomputar.
     """
-    N0_values, s_values, tc_matrix, timing_matrix = scan_cooperation_time(
-        n_runs=1000,
-    )
+    total_start = time.perf_counter()
+
+    if use_cache and (not force_recompute) and os.path.exists(cache_filename):
+        N0_values, s_values, tc_matrix, timing_matrix = load_figure_2_results_txt(
+            cache_filename
+        )
+    else:
+        N0_values, s_values, tc_matrix, timing_matrix = scan_cooperation_time(
+            n_runs=1000,
+        )
+
+        total_elapsed_so_far = time.perf_counter() - total_start
+
+        save_figure_2_results_txt(
+            filename=cache_filename,
+            N0_values=N0_values,
+            s_values=s_values,
+            tc_matrix=tc_matrix,
+            timing_matrix=timing_matrix,
+            total_elapsed=total_elapsed_so_far,
+        )
 
     plt.figure(figsize=(7, 5))
 
@@ -556,13 +842,11 @@ def reproduce_figure_2():
         ],
     )
 
-    plt.colorbar(label="tiempo de cooperación tc")
-    plt.xlabel("tamaño inicial N0")
-    plt.ylabel("fuerza de selección s")
-    plt.title("Fig. 2 aproximada: tc(s, N0)")
+    plt.colorbar(label=fr"Cooperation time $t_c$")
+    plt.xlabel(fr"Initial Population Size $N_0$")
+    plt.ylabel(fr"Selection Strength $s$")
+    plt.title(fr"Dependence of $t_c$ on $s$ and $N_0$")
 
-    # Frontera asintótica del suplemento:
-    # s*N0 ≈ p/(1 + p*x0)
     x0 = 0.5
     p = 10.0
     N_line = np.linspace(N0_values.min(), N0_values.max(), 200)
@@ -580,9 +864,10 @@ def reproduce_figure_2():
     plt.savefig("figure_2.png", dpi=1200)
     plt.show()
 
+    total_elapsed = time.perf_counter() - total_start
+    print(f"Tiempo total Fig. 2: {format_seconds(total_elapsed)}")
+
     return N0_values, s_values, tc_matrix, timing_matrix
-
-
 # ============================================================
 # Main
 # ============================================================
@@ -593,14 +878,27 @@ if __name__ == "__main__":
     # --------------------------------------------------------
     # Reproduce Fig. 1
     # --------------------------------------------------------
-    results_fig1, timings_fig1 = reproduce_figure_1()
+
+    """
+    results_fig1, deterministic_fig1, timings_fig1 = reproduce_figure_1(
+        use_cache=True,
+        force_recompute=False,
+        cache_filename="figure_1_results.txt",
+    )
+    """
 
     # --------------------------------------------------------
     # Reproduce Fig. 2
     # --------------------------------------------------------
     # Puede tardar bastante. Descomentá para correrla.
     #
-    #N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2()
+    
+    N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2(
+    use_cache=True,
+    force_recompute=False, # Si querés forzar el recálculo, pon True.
+    cache_filename="figure_2_results.txt",
+    )
+    
 
     program_elapsed = time.perf_counter() - program_start
 
