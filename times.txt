@@ -16,3 +16,15 @@ Resultados Fig. 2 guardados en: figure_2_results.txt
 Tiempo total Fig. 2: 20 h 51 min 41.8 s
 
 Tiempo total de ejecución del script: 20 h 51 min 41.8 s
+
+
+Resumen escaneo Fig. 2:
+Tiempo total: 38 h 35 min 40.0 s
+Tiempo promedio por combinación: 2 min 1.9 s
+Combinación más lenta: 9 min 2.0 s
+Combinación más rápida: 43.71 s
+
+Resultados Fig. 2 guardados en: figure_2_results_N0_2_40_s60_runs1000.txt
+Tiempo total Fig. 2: 40 h 12 min 33.8 s
+
+Tiempo total de ejecución del script: 40 h 12 min 33.8 s

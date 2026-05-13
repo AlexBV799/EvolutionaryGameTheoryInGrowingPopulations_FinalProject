@@ -795,6 +795,98 @@ def scan_cooperation_time(
 
     return N0_values, s_values, tc_matrix, timing_matrix
 
+def estimate_numerical_boundary(
+    N0_values,
+    s_values,
+    tc_matrix,
+    tc_threshold=0.05,
+    smooth=True,
+    window=3,
+):
+    """
+    Estima la frontera numérica entre tc > 0 y tc ~ 0.
+
+    Para cada N0 busca el primer punto donde tc cae por debajo
+    de tc_threshold al aumentar s. Luego interpola linealmente.
+
+    tc_threshold no debe ser demasiado pequeño porque tc_matrix
+    viene de simulaciones estocásticas y puede tener ruido.
+    """
+    boundary_N0 = []
+    boundary_s = []
+
+    for j, N0 in enumerate(N0_values):
+        tc_col = tc_matrix[:, j]
+
+        # Región con cooperación transitoria
+        active = tc_col > tc_threshold
+
+        # Si nunca hay cooperación transitoria
+        if not np.any(active):
+            continue
+
+        # Si todo el rango tiene cooperación transitoria
+        if np.all(active):
+            boundary_N0.append(N0)
+            boundary_s.append(s_values.max())
+            continue
+
+        # Buscamos la transición active -> inactive
+        active_indices = np.where(active)[0]
+        last_active = active_indices.max()
+
+        if last_active >= len(s_values) - 1:
+            s_boundary = s_values[last_active]
+        else:
+            # Interpolación entre el último punto activo y el primer inactivo
+            s1 = s_values[last_active]
+            s2 = s_values[last_active + 1]
+            tc1 = tc_col[last_active]
+            tc2 = tc_col[last_active + 1]
+
+            if np.isclose(tc1, tc2):
+                s_boundary = 0.5 * (s1 + s2)
+            else:
+                s_boundary = s1 + (tc_threshold - tc1) * (s2 - s1) / (tc2 - tc1)
+
+        boundary_N0.append(N0)
+        boundary_s.append(s_boundary)
+
+    boundary_N0 = np.array(boundary_N0)
+    boundary_s = np.array(boundary_s)
+
+    # Suavizado simple para evitar dientes por ruido estocástico
+    if smooth and len(boundary_s) >= window:
+        kernel = np.ones(window) / window
+        boundary_s_smooth = np.convolve(boundary_s, kernel, mode="same")
+
+        # Evitar artefactos en los bordes
+        half = window // 2
+        boundary_s_smooth[:half] = boundary_s[:half]
+        boundary_s_smooth[-half:] = boundary_s[-half:]
+
+        boundary_s = boundary_s_smooth
+
+    return boundary_N0, boundary_s
+
+def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
+    """
+    Fuerza que una curva t_c(s) se quede en cero después
+    de la primera caída a cero.
+
+    Esto es útil porque teóricamente t_c debe decrecer con s,
+    pero las simulaciones finitas pueden producir pequeños picos
+    espurios por ruido estadístico.
+    """
+    tc_clean = np.array(tc_values, copy=True)
+
+    zero_indices = np.where(tc_clean <= zero_threshold)[0]
+
+    if len(zero_indices) > 0:
+        first_zero = zero_indices[0]
+        tc_clean[first_zero:] = 0.0
+
+    return tc_clean
 
 def reproduce_figure_2(
     use_cache=True,
@@ -803,6 +895,11 @@ def reproduce_figure_2(
 ):
     """
     Reproduce aproximadamente la Fig. 2 del paper.
+
+    Incluye:
+    - mapa de calor de tc
+    - curva sólida: frontera numérica estimada desde tc_matrix
+    - curva discontinua: aproximación sN0 ≈ p/(1 + p x0)
 
     Guarda/carga resultados en un .txt para no recomputar.
     """
@@ -814,6 +911,8 @@ def reproduce_figure_2(
         )
     else:
         N0_values, s_values, tc_matrix, timing_matrix = scan_cooperation_time(
+            N0_values=np.arange(2, 40, 2),
+            s_values=np.linspace(0.02, 0.4, 60),
             n_runs=1000,
         )
 
@@ -828,46 +927,146 @@ def reproduce_figure_2(
             total_elapsed=total_elapsed_so_far,
         )
 
-    plt.figure(figsize=(7, 5))
+    # --------------------------------------------------------
+    # Plot Fig. 2
+    # --------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    plt.imshow(
+    im = ax.imshow(
         tc_matrix,
         origin="lower",
         aspect="auto",
+        interpolation="nearest",
         extent=[
             N0_values.min(),
             N0_values.max(),
             s_values.min(),
             s_values.max(),
         ],
+        vmin=0.0,
+        vmax=np.nanmax(tc_matrix),
+        cmap="Blues",   # claro para tc bajo, oscuro para tc alto
     )
 
-    plt.colorbar(label=fr"Cooperation time $t_c$")
-    plt.xlabel(fr"Initial Population Size $N_0$")
-    plt.ylabel(fr"Selection Strength $s$")
-    plt.title(fr"Dependence of $t_c$ on $s$ and $N_0$")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(r"Cooperation time $t_c$")
 
+    ax.set_xlabel(r"Initial population size $N_0$")
+    ax.set_ylabel(r"Selection strength $s$")
+    ax.set_title(r"Dependence of $t_c$ on $s$ and $N_0$")
+
+    # --------------------------------------------------------
+    # Curva sólida: frontera numérica desde la matriz tc_matrix
+    # --------------------------------------------------------
+    boundary_N0, boundary_s = estimate_numerical_boundary(
+    N0_values,
+    s_values,
+    tc_matrix,
+    tc_threshold=0.05,
+    smooth=True,
+    window=3,
+)
+
+    ax.plot(
+        boundary_N0,
+        boundary_s,
+        "k-",
+        linewidth=2,
+        label="Numerical boundary",
+    )
+
+    # --------------------------------------------------------
+    # Curva discontinua: aproximación teórica
+    # s N0 ≈ p / (1 + p x0)
+    # --------------------------------------------------------
     x0 = 0.5
     p = 10.0
-    N_line = np.linspace(N0_values.min(), N0_values.max(), 200)
+
+    N_line = np.linspace(N0_values.min(), N0_values.max(), 500)
     s_line = p / ((1.0 + p * x0) * N_line)
 
-    plt.plot(
-        N_line,
-        s_line,
+    mask = (s_line >= s_values.min()) & (s_line <= s_values.max())
+
+    ax.plot(
+        N_line[mask],
+        s_line[mask],
         "k--",
+        linewidth=2,
         label=r"$sN_0 \approx p/(1+p x_0)$",
     )
 
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("figure_2.png", dpi=1200)
+    ax.set_xlim(N0_values.min(), N0_values.max())
+    ax.set_ylim(s_values.min(), s_values.max())
+
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    fig.savefig("figure_2.png", dpi=1200, bbox_inches="tight")
     plt.show()
 
     total_elapsed = time.perf_counter() - total_start
     print(f"Tiempo total Fig. 2: {format_seconds(total_elapsed)}")
 
     return N0_values, s_values, tc_matrix, timing_matrix
+
+def reproduce_figure_2b_from_txt(
+    cache_filename="figure_2_results.txt",
+    selected_N0_values=(4, 6, 8),
+    save_filename="figure_2b.png",
+    clean_after_zero=True,
+    zero_threshold=1e-8,
+):
+    """
+    Fig. 2b:
+    Lee figure_2_results.txt y representa t_c frente a s
+    para N0 = 4, 6, 8 por defecto.
+
+    No recomputa simulaciones.
+
+    Si clean_after_zero=True, elimina picos espurios después
+    de que t_c haya caído a cero.
+    """
+
+    N0_values, s_values, tc_matrix, timing_matrix = load_figure_2_results_txt(
+        cache_filename
+    )
+
+    plt.figure(figsize=(7, 4))
+
+    for N0 in selected_N0_values:
+        if N0 not in N0_values:
+            print(f"Aviso: N0={N0} no está en {cache_filename}. Se ignora.")
+            continue
+
+        j = np.where(N0_values == N0)[0][0]
+
+        tc_values = tc_matrix[:, j]
+
+        if clean_after_zero:
+            tc_values = enforce_zero_after_first_zero(
+                tc_values,
+                zero_threshold=zero_threshold,
+            )
+
+        plt.plot(
+            s_values,
+            tc_values,
+            marker="o",
+            linewidth=2,
+            markersize=4,
+            label=fr"$N_0={N0}$",
+        )
+
+    plt.xlabel(r"Selection strength $s$")
+    plt.ylabel(r"Cooperation time $t_c$")
+    plt.title(r"$t_c$ vs $s$ for different $N_0$")
+    plt.legend()
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(save_filename, dpi=1200, bbox_inches="tight")
+    plt.show()
+
+    return N0_values, s_values, tc_matrix, timing_matrix
+
 # ============================================================
 # Main
 # ============================================================
@@ -891,14 +1090,28 @@ if __name__ == "__main__":
     # Reproduce Fig. 2
     # --------------------------------------------------------
     # Puede tardar bastante. Descomentá para correrla.
-    #
+
     
     N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2(
     use_cache=True,
-    force_recompute=False, # Si querés forzar el recálculo, pon True.
-    cache_filename="figure_2_results.txt",
-    )
+    force_recompute=False,
+    cache_filename="figure_2_results_N0_2_40_s60_runs1000.txt",
+    smooth_for_plot=True,
+    sigma_smooth=0.8,
+    tc_contour_level=0.05,
+)
     
+    # Reproduce Fig. 2b
+    filename_2b = "figure_2_results_N0_2_40_s60_runs1000.txt"
+
+    N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2b_from_txt(
+    cache_filename=filename_2b,
+    selected_N0_values=(4, 6, 8),
+    save_filename="figure_2b_2.png",
+    clean_after_zero=True,
+    zero_threshold=1e-8,
+    )
+    #"""
 
     program_elapsed = time.perf_counter() - program_start
 
