@@ -2,6 +2,7 @@ import os
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy.integrate import solve_ivp
 from tqdm import tqdm
        
@@ -888,6 +889,49 @@ def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
 
     return tc_clean
 
+def truncate_colormap(cmap_name="Blues", minval=0.20, maxval=0.80, n=256):
+    """
+    Recorta una colormap para que el rango de colores no sea tan extremo.
+
+    minval controla el color de t_c = 0.
+    maxval controla el color de t_c = 8.
+
+    Con Blues:
+    - minval más alto -> el 0 será más azul, menos blanco.
+    - maxval más bajo -> el 8 será menos oscuro.
+    """
+    import matplotlib.colors as mcolors
+
+    cmap = plt.get_cmap(cmap_name)
+    new_colors = cmap(np.linspace(minval, maxval, n))
+
+    return mcolors.LinearSegmentedColormap.from_list(
+        f"truncated_{cmap_name}",
+        new_colors,
+    )
+
+def paper_like_greys(vmax=8.0):
+    """
+    Colormap tipo paper:
+    - tc = 0 claro
+    - tc ≈ 1 ya bastante oscuro
+    - tc alto más oscuro
+
+    Mantiene la barra de color lineal/equiespaciada.
+    """
+    colors = [
+        (0.00 / vmax, "#f2f2f2"),  # tc = 0, gris muy claro
+        (0.25 / vmax, "#d9d9d9"),  # tc pequeño
+        (1.00 / vmax, "#8c8c8c"),  # tc = 1, ya oscuro
+        (3.00 / vmax, "#4d4d4d"),  # tc medio
+        (8.00 / vmax, "#111111"),  # tc alto
+    ]
+
+    return mcolors.LinearSegmentedColormap.from_list(
+        "paper_like_greys",
+        colors,
+    )
+
 def reproduce_figure_2(
     use_cache=True,
     force_recompute=False,
@@ -932,6 +976,10 @@ def reproduce_figure_2(
     # --------------------------------------------------------
     fig, ax = plt.subplots(figsize=(7, 5))
 
+    vmax_tc = 8.0
+
+    paper_cmap = paper_like_greys(vmax=vmax_tc)
+
     im = ax.imshow(
         tc_matrix,
         origin="lower",
@@ -943,9 +991,9 @@ def reproduce_figure_2(
             s_values.min(),
             s_values.max(),
         ],
+        cmap=paper_cmap,
         vmin=0.0,
-        vmax=np.nanmax(tc_matrix),
-        cmap="Blues",   # claro para tc bajo, oscuro para tc alto
+        vmax=vmax_tc,
     )
 
     cbar = fig.colorbar(im, ax=ax)
@@ -1096,11 +1144,8 @@ if __name__ == "__main__":
     use_cache=True,
     force_recompute=False,
     cache_filename="figure_2_results_N0_2_40_s60_runs1000.txt",
-    smooth_for_plot=True,
-    sigma_smooth=0.8,
-    tc_contour_level=0.05,
-)
-    
+    )
+    """
     # Reproduce Fig. 2b
     filename_2b = "figure_2_results_N0_2_40_s60_runs1000.txt"
 
@@ -1111,7 +1156,7 @@ if __name__ == "__main__":
     clean_after_zero=True,
     zero_threshold=1e-8,
     )
-    #"""
+    """
 
     program_elapsed = time.perf_counter() - program_start
 
