@@ -4,6 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from scipy.integrate import solve_ivp
+from scipy.ndimage import gaussian_filter
+from scipy.interpolate import PchipInterpolator, RectBivariateSpline
+from scipy.optimize import curve_fit
 from tqdm import tqdm
        
 
@@ -796,88 +799,12 @@ def scan_cooperation_time(
 
     return N0_values, s_values, tc_matrix, timing_matrix
 
-def estimate_numerical_boundary(
-    N0_values,
-    s_values,
-    tc_matrix,
-    tc_threshold=0.05,
-    smooth=True,
-    window=3,
-):
-    """
-    Estima la frontera numérica entre tc > 0 y tc ~ 0.
-
-    Para cada N0 busca el primer punto donde tc cae por debajo
-    de tc_threshold al aumentar s. Luego interpola linealmente.
-
-    tc_threshold no debe ser demasiado pequeño porque tc_matrix
-    viene de simulaciones estocásticas y puede tener ruido.
-    """
-    boundary_N0 = []
-    boundary_s = []
-
-    for j, N0 in enumerate(N0_values):
-        tc_col = tc_matrix[:, j]
-
-        # Región con cooperación transitoria
-        active = tc_col > tc_threshold
-
-        # Si nunca hay cooperación transitoria
-        if not np.any(active):
-            continue
-
-        # Si todo el rango tiene cooperación transitoria
-        if np.all(active):
-            boundary_N0.append(N0)
-            boundary_s.append(s_values.max())
-            continue
-
-        # Buscamos la transición active -> inactive
-        active_indices = np.where(active)[0]
-        last_active = active_indices.max()
-
-        if last_active >= len(s_values) - 1:
-            s_boundary = s_values[last_active]
-        else:
-            # Interpolación entre el último punto activo y el primer inactivo
-            s1 = s_values[last_active]
-            s2 = s_values[last_active + 1]
-            tc1 = tc_col[last_active]
-            tc2 = tc_col[last_active + 1]
-
-            if np.isclose(tc1, tc2):
-                s_boundary = 0.5 * (s1 + s2)
-            else:
-                s_boundary = s1 + (tc_threshold - tc1) * (s2 - s1) / (tc2 - tc1)
-
-        boundary_N0.append(N0)
-        boundary_s.append(s_boundary)
-
-    boundary_N0 = np.array(boundary_N0)
-    boundary_s = np.array(boundary_s)
-
-    # Suavizado simple para evitar dientes por ruido estocástico
-    if smooth and len(boundary_s) >= window:
-        kernel = np.ones(window) / window
-        boundary_s_smooth = np.convolve(boundary_s, kernel, mode="same")
-
-        # Evitar artefactos en los bordes
-        half = window // 2
-        boundary_s_smooth[:half] = boundary_s[:half]
-        boundary_s_smooth[-half:] = boundary_s[-half:]
-
-        boundary_s = boundary_s_smooth
-
-    return boundary_N0, boundary_s
+# Limpieza de tc_matrix
 
 def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
     """
-    Fuerza que una curva t_c(s) se quede en cero después
-    de la primera caída a cero.
-
-    Esto es útil porque teóricamente t_c debe decrecer con s,
-    pero las simulaciones finitas pueden producir pequeños picos
-    espurios por ruido estadístico.
+    Para una curva t_c(s) de un N0 fijo:
+    cuando t_c llega a cero, todos los valores posteriores se fuerzan a cero.
     """
     tc_clean = np.array(tc_values, copy=True)
 
@@ -889,63 +816,190 @@ def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
 
     return tc_clean
 
-def truncate_colormap(cmap_name="Blues", minval=0.20, maxval=0.80, n=256):
+
+def clean_tc_matrix_after_zero(tc_matrix, zero_threshold=1e-8):
     """
-    Recorta una colormap para que el rango de colores no sea tan extremo.
+    Aplica enforce_zero_after_first_zero a cada columna de tc_matrix.
 
-    minval controla el color de t_c = 0.
-    maxval controla el color de t_c = 8.
-
-    Con Blues:
-    - minval más alto -> el 0 será más azul, menos blanco.
-    - maxval más bajo -> el 8 será menos oscuro.
+    Filas: valores de s
+    Columnas: valores de N0
     """
-    import matplotlib.colors as mcolors
+    tc_clean = np.array(tc_matrix, copy=True)
 
-    cmap = plt.get_cmap(cmap_name)
-    new_colors = cmap(np.linspace(minval, maxval, n))
+    for j in range(tc_clean.shape[1]):
+        tc_clean[:, j] = enforce_zero_after_first_zero(
+            tc_clean[:, j],
+            zero_threshold=zero_threshold,
+        )
 
-    return mcolors.LinearSegmentedColormap.from_list(
-        f"truncated_{cmap_name}",
-        new_colors,
-    )
+    return tc_clean
 
-def paper_like_greys(vmax=8.0):
+# Colormap azul tipo paper
+
+def paper_like_blues(vmax=8.0):
     """
-    Colormap tipo paper:
+    Colormap azul tipo paper:
+
     - tc = 0 claro
-    - tc ≈ 1 ya bastante oscuro
-    - tc alto más oscuro
+    - tc ≈ 1 ya bastante visible
+    - tc alto azul oscuro
 
     Mantiene la barra de color lineal/equiespaciada.
     """
     colors = [
-        (0.00 / vmax, "#f2f2f2"),  # tc = 0, gris muy claro
-        (0.25 / vmax, "#d9d9d9"),  # tc pequeño
-        (1.00 / vmax, "#8c8c8c"),  # tc = 1, ya oscuro
-        (3.00 / vmax, "#4d4d4d"),  # tc medio
-        (8.00 / vmax, "#111111"),  # tc alto
+        (0.00 / vmax, "#f2f7fb"),  # tc = 0, azul casi blanco
+        (0.25 / vmax, "#d6e6f2"),  # tc pequeño
+        (1.00 / vmax, "#8bbbd9"),  # tc = 1, azul medio
+        (3.00 / vmax, "#3f8fc1"),  # tc medio
+        (8.00 / vmax, "#084a91"),  # tc alto
     ]
 
     return mcolors.LinearSegmentedColormap.from_list(
-        "paper_like_greys",
+        "paper_like_blues",
         colors,
     )
+
+def smooth_interpolate_tc_matrix(
+    N0_values,
+    s_values,
+    tc_matrix,
+    sigma_s=3.0,
+    sigma_N0=2.0,
+    n_s_fine=800,
+    n_N0_fine=800,
+):
+    """
+    Suaviza e interpola tc_matrix para dibujar una frontera numérica suave.
+
+    Filas de tc_matrix: s_values
+    Columnas de tc_matrix: N0_values
+
+    sigma_s y sigma_N0 controlan el suavizado en unidades de índice de matriz.
+    Valores más grandes => frontera más suave.
+    """
+    tc_smooth = gaussian_filter(
+        tc_matrix,
+        sigma=(sigma_s, sigma_N0),
+        mode="nearest",
+    )
+
+    spline = RectBivariateSpline(
+        s_values,
+        N0_values,
+        tc_smooth,
+        kx=3,
+        ky=3,
+    )
+
+    s_fine = np.linspace(s_values.min(), s_values.max(), n_s_fine)
+    N0_fine = np.linspace(N0_values.min(), N0_values.max(), n_N0_fine)
+
+    tc_fine = spline(s_fine, N0_fine)
+    tc_fine = np.clip(tc_fine, 0.0, None)
+
+    N0_grid_fine, s_grid_fine = np.meshgrid(N0_fine, s_fine)
+
+    return N0_grid_fine, s_grid_fine, tc_fine
+
+def estimate_empirical_boundary_from_tc(
+    N0_values,
+    s_values,
+    tc_matrix,
+    tc_threshold=0.05,
+    zero_threshold=1e-8,
+):
+    """
+    Estima la frontera empírica de transición desde tc_matrix.
+
+    Para cada N0:
+    - limpia la curva tc(s), imponiendo que cuando tc llega a 0 no vuelve a subir
+    - busca la transición tc > tc_threshold -> tc <= tc_threshold
+    - interpola linealmente la posición de la frontera
+
+    Devuelve:
+        boundary_N0, boundary_s
+    """
+    tc_clean = clean_tc_matrix_after_zero(
+        tc_matrix,
+        zero_threshold=zero_threshold,
+    )
+
+    boundary_N0 = []
+    boundary_s = []
+
+    for j, N0 in enumerate(N0_values):
+        tc_col = tc_clean[:, j]
+
+        active = tc_col > tc_threshold
+
+        # Si nunca hay cooperación transitoria
+        if not np.any(active):
+            continue
+
+        # Si siempre hay cooperación transitoria en el rango simulado,
+        # la frontera está fuera del rango: no se dibuja.
+        if np.all(active):
+            continue
+
+        active_indices = np.where(active)[0]
+        last_active = active_indices.max()
+
+        if last_active >= len(s_values) - 1:
+            continue
+
+        s1 = s_values[last_active]
+        s2 = s_values[last_active + 1]
+        tc1 = tc_col[last_active]
+        tc2 = tc_col[last_active + 1]
+
+        if np.isclose(tc1, tc2):
+            s_boundary = 0.5 * (s1 + s2)
+        else:
+            s_boundary = s1 + (tc_threshold - tc1) * (s2 - s1) / (tc2 - tc1)
+
+        boundary_N0.append(N0)
+        boundary_s.append(s_boundary)
+
+    return np.array(boundary_N0), np.array(boundary_s), tc_clean
+
+def fit_inverse_boundary(boundary_N0, boundary_s):
+    """
+    Ajusta una frontera del tipo
+
+        s = A / N0
+
+    que es la forma física esperada por el argumento neutral/asintótico.
+    """
+    def model(N0, A):
+        return A / N0
+
+    popt, pcov = curve_fit(
+        model,
+        boundary_N0,
+        boundary_s,
+        p0=[1.0],
+        bounds=(0.0, np.inf),
+        maxfev=10000,
+    )
+
+    A_fit = popt[0]
+    return A_fit
+# ============================================================
+# Fig. 2
+# ============================================================
 
 def reproduce_figure_2(
     use_cache=True,
     force_recompute=False,
     cache_filename="figure_2_results.txt",
+    clean_after_zero=True,
+    zero_threshold=1e-8,
+    save_filename="figure_2.png",
 ):
     """
-    Reproduce aproximadamente la Fig. 2 del paper.
-
-    Incluye:
-    - mapa de calor de tc
-    - curva sólida: frontera numérica estimada desde tc_matrix
-    - curva discontinua: aproximación sN0 ≈ p/(1 + p x0)
-
-    Guarda/carga resultados en un .txt para no recomputar.
+    Fig. 2:
+    - mapa de color desde tus simulaciones guardadas
+    - líneas de referencia del paper
     """
     total_start = time.perf_counter()
 
@@ -971,26 +1025,35 @@ def reproduce_figure_2(
             total_elapsed=total_elapsed_so_far,
         )
 
-    # --------------------------------------------------------
-    # Plot Fig. 2
-    # --------------------------------------------------------
+    if clean_after_zero:
+        tc_matrix_plot = clean_tc_matrix_after_zero(
+            tc_matrix,
+            zero_threshold=zero_threshold,
+        )
+    else:
+        tc_matrix_plot = tc_matrix
+
     fig, ax = plt.subplots(figsize=(7, 5))
 
     vmax_tc = 8.0
+    paper_cmap = paper_like_blues(vmax=vmax_tc)
 
-    paper_cmap = paper_like_greys(vmax=vmax_tc)
+    dN = N0_values[1] - N0_values[0]
+    ds = s_values[1] - s_values[0]
+
+    extent = [
+        N0_values.min() - dN / 2,
+        N0_values.max() + dN / 2,
+        s_values.min() - ds / 2,
+        s_values.max() + ds / 2,
+    ]
 
     im = ax.imshow(
-        tc_matrix,
+        tc_matrix_plot,
         origin="lower",
         aspect="auto",
         interpolation="nearest",
-        extent=[
-            N0_values.min(),
-            N0_values.max(),
-            s_values.min(),
-            s_values.max(),
-        ],
+        extent=extent,
         cmap=paper_cmap,
         vmin=0.0,
         vmax=vmax_tc,
@@ -1004,57 +1067,76 @@ def reproduce_figure_2(
     ax.set_title(r"Dependence of $t_c$ on $s$ and $N_0$")
 
     # --------------------------------------------------------
-    # Curva sólida: frontera numérica desde la matriz tc_matrix
+    # Frontera empírica desde tus simulaciones
     # --------------------------------------------------------
-    boundary_N0, boundary_s = estimate_numerical_boundary(
-    N0_values,
-    s_values,
-    tc_matrix,
-    tc_threshold=0.05,
-    smooth=True,
-    window=3,
-)
 
-    ax.plot(
+    boundary_N0, boundary_s, tc_matrix_plot = estimate_empirical_boundary_from_tc(
+        N0_values=N0_values,
+        s_values=s_values,
+        tc_matrix=tc_matrix,
+        tc_threshold=0.05,
+        zero_threshold=zero_threshold,
+    )
+
+    # Puntos de frontera extraídos de la matriz
+    ax.scatter(
         boundary_N0,
         boundary_s,
+        color="black",
+        s=25,
+        alpha=0.8,
+        label="_nolegend_",
+    )
+
+    # Ajuste físico s = A / N0
+    A_fit = fit_inverse_boundary(boundary_N0, boundary_s)
+
+    N_line = np.linspace(N0_values.min(), N0_values.max(), 1000)
+    s_fit = A_fit / N_line
+
+    mask_fit = (s_fit >= s_values.min()) & (s_fit <= s_values.max())
+
+    solid_line, = ax.plot(
+        N_line[mask_fit],
+        s_fit[mask_fit],
         "k-",
-        linewidth=2,
-        label="Numerical boundary",
+        linewidth=2.2,
+        label=fr"Empirical boundary, $sN_0 \approx {A_fit:.2f}$",
     )
 
     # --------------------------------------------------------
-    # Curva discontinua: aproximación teórica
-    # s N0 ≈ p / (1 + p x0)
+    # Línea teórica del paper
     # --------------------------------------------------------
-    x0 = 0.5
-    p = 10.0
 
-    N_line = np.linspace(N0_values.min(), N0_values.max(), 500)
-    s_line = p / ((1.0 + p * x0) * N_line)
+    p_theory = 10.0
+    x0_theory = 0.5
 
-    mask = (s_line >= s_values.min()) & (s_line <= s_values.max())
+    A_theory = p_theory / (1.0 + p_theory * x0_theory)
+    s_theory = A_theory / N_line
 
-    ax.plot(
-        N_line[mask],
-        s_line[mask],
+    mask_theory = (s_theory >= s_values.min()) & (s_theory <= s_values.max())
+
+    dashed_line, = ax.plot(
+        N_line[mask_theory],
+        s_theory[mask_theory],
         "k--",
-        linewidth=2,
-        label=r"$sN_0 \approx p/(1+p x_0)$",
+        linewidth=2.0,
+        label=fr"Theory, $sN_0 \approx {A_theory:.2f}$",
     )
 
-    ax.set_xlim(N0_values.min(), N0_values.max())
-    ax.set_ylim(s_values.min(), s_values.max())
+    ax.legend(
+        handles=[solid_line, dashed_line],
+        loc="upper right",
+    )
 
-    ax.legend(loc="upper right")
     fig.tight_layout()
-    fig.savefig("figure_2.png", dpi=1200, bbox_inches="tight")
+    fig.savefig(save_filename, dpi=1200, bbox_inches="tight")
     plt.show()
 
     total_elapsed = time.perf_counter() - total_start
     print(f"Tiempo total Fig. 2: {format_seconds(total_elapsed)}")
 
-    return N0_values, s_values, tc_matrix, timing_matrix
+    return N0_values, s_values, tc_matrix_plot, timing_matrix
 
 def reproduce_figure_2b_from_txt(
     cache_filename="figure_2_results.txt",
@@ -1144,6 +1226,9 @@ if __name__ == "__main__":
     use_cache=True,
     force_recompute=False,
     cache_filename="figure_2_results_N0_2_40_s60_runs1000.txt",
+    clean_after_zero=True,
+    zero_threshold=1e-8,
+    save_filename="figure_2.png",
     )
     """
     # Reproduce Fig. 2b
