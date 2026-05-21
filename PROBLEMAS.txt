@@ -1,4 +1,0 @@
-FIGURA 2
-Una vez que llegue a tc=0 quedarse ahi
-Hacer promedio de ultimos values
-Hacer promedio diferentes corridas

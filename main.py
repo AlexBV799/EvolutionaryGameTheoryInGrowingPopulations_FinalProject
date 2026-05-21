@@ -4,8 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from scipy.integrate import solve_ivp
-from scipy.ndimage import gaussian_filter
-from scipy.interpolate import PchipInterpolator, RectBivariateSpline
 from scipy.optimize import curve_fit
 from tqdm import tqdm
        
@@ -285,7 +283,7 @@ def deterministic_solution(
         t_eval=t_eval,
         rtol=1e-9,
         atol=1e-12,
-    )
+        )
 
     return sol.t, sol.y[1], sol.y[0]
 
@@ -716,12 +714,12 @@ def load_figure_2_results_txt(filename):
 
     return N0_values, s_values, tc_matrix, timing_matrix
 # ============================================================
-# Figura 2 aproximada
+# Simulación para Fig. 2
 # ============================================================
 
 def scan_cooperation_time(
-    N0_values=np.arange(2, 36, 2),
-    s_values=np.linspace(0.02, 0.4, 30),
+    N0_values=np.arange(2, 40, 2),
+    s_values=np.linspace(0.02, 0.4, 60),
     x0=0.5,
     b=3.0,
     c=1.0,
@@ -735,13 +733,10 @@ def scan_cooperation_time(
     """
     Escaneo para Fig. 2 con tqdm.
 
-    Muestra:
-    - barra externa para s
-    - barra interna para N0
-    - tiempo de cada combinación
-    - tiempo total
-
-    Para una figura más precisa, subir n_runs a 5000 o 10000.
+    Requiere que ya tengas definidas estas funciones en el script:
+    - ensemble_simulation
+    - cooperation_time
+    - format_seconds
     """
     total_start = time.perf_counter()
 
@@ -799,17 +794,32 @@ def scan_cooperation_time(
 
     return N0_values, s_values, tc_matrix, timing_matrix
 
-# Limpieza de tc_matrix
 
-def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
+
+# ============================================================
+# Limpieza física de tc_matrix
+# ============================================================
+
+def clean_tc_curve_physical(tc_values, zero_threshold=0.05):
     """
-    Para una curva t_c(s) de un N0 fijo:
-    cuando t_c llega a cero, todos los valores posteriores se fuerzan a cero.
+    Limpia una curva t_c(s) para un N0 fijo.
+
+    Impone:
+    1. Valores t_c <= zero_threshold se consideran cero.
+    2. t_c no puede aumentar al aumentar s.
+    3. Cuando t_c llega a cero, permanece cero para s mayores.
+
+    Esto elimina picos espurios debidos a ruido estadístico.
     """
-    tc_clean = np.array(tc_values, copy=True)
+    tc_clean = np.array(tc_values, copy=True, dtype=float)
+
+    tc_clean[tc_clean <= zero_threshold] = 0.0
+
+    for i in range(1, len(tc_clean)):
+        if tc_clean[i] > tc_clean[i - 1]:
+            tc_clean[i] = tc_clean[i - 1]
 
     zero_indices = np.where(tc_clean <= zero_threshold)[0]
-
     if len(zero_indices) > 0:
         first_zero = zero_indices[0]
         tc_clean[first_zero:] = 0.0
@@ -817,41 +827,47 @@ def enforce_zero_after_first_zero(tc_values, zero_threshold=1e-8):
     return tc_clean
 
 
-def clean_tc_matrix_after_zero(tc_matrix, zero_threshold=1e-8):
+def clean_tc_matrix_physical(tc_matrix, zero_threshold=0.05):
     """
-    Aplica enforce_zero_after_first_zero a cada columna de tc_matrix.
+    Aplica clean_tc_curve_physical a cada columna de tc_matrix.
 
-    Filas: valores de s
-    Columnas: valores de N0
+    Filas: valores de s.
+    Columnas: valores de N0.
     """
-    tc_clean = np.array(tc_matrix, copy=True)
+    tc_clean = np.array(tc_matrix, copy=True, dtype=float)
 
     for j in range(tc_clean.shape[1]):
-        tc_clean[:, j] = enforce_zero_after_first_zero(
+        tc_clean[:, j] = clean_tc_curve_physical(
             tc_clean[:, j],
             zero_threshold=zero_threshold,
         )
 
     return tc_clean
 
-# Colormap azul tipo paper
+
+# Alias por compatibilidad con código anterior.
+def enforce_zero_after_first_zero(tc_values, zero_threshold=0.05):
+    return clean_tc_curve_physical(tc_values, zero_threshold=zero_threshold)
+
+
+def clean_tc_matrix_after_zero(tc_matrix, zero_threshold=0.05):
+    return clean_tc_matrix_physical(tc_matrix, zero_threshold=zero_threshold)
+
+
+# ============================================================
+# Colormap azul
+# ============================================================
 
 def paper_like_blues(vmax=8.0):
     """
-    Colormap azul tipo paper:
-
-    - tc = 0 claro
-    - tc ≈ 1 ya bastante visible
-    - tc alto azul oscuro
-
-    Mantiene la barra de color lineal/equiespaciada.
+    Colormap azul con escala lineal.
     """
     colors = [
-        (0.00 / vmax, "#f2f7fb"),  # tc = 0, azul casi blanco
-        (0.25 / vmax, "#d6e6f2"),  # tc pequeño
-        (1.00 / vmax, "#8bbbd9"),  # tc = 1, azul medio
-        (3.00 / vmax, "#3f8fc1"),  # tc medio
-        (8.00 / vmax, "#084a91"),  # tc alto
+        (0.00 / vmax, "#f2f7fb"),
+        (0.25 / vmax, "#d6e6f2"),
+        (1.00 / vmax, "#8bbbd9"),
+        (3.00 / vmax, "#3f8fc1"),
+        (8.00 / vmax, "#084a91"),
     ]
 
     return mcolors.LinearSegmentedColormap.from_list(
@@ -859,90 +875,37 @@ def paper_like_blues(vmax=8.0):
         colors,
     )
 
-def smooth_interpolate_tc_matrix(
-    N0_values,
-    s_values,
-    tc_matrix,
-    sigma_s=3.0,
-    sigma_N0=2.0,
-    n_s_fine=800,
-    n_N0_fine=800,
-):
-    """
-    Suaviza e interpola tc_matrix para dibujar una frontera numérica suave.
 
-    Filas de tc_matrix: s_values
-    Columnas de tc_matrix: N0_values
-
-    sigma_s y sigma_N0 controlan el suavizado en unidades de índice de matriz.
-    Valores más grandes => frontera más suave.
-    """
-    tc_smooth = gaussian_filter(
-        tc_matrix,
-        sigma=(sigma_s, sigma_N0),
-        mode="nearest",
-    )
-
-    spline = RectBivariateSpline(
-        s_values,
-        N0_values,
-        tc_smooth,
-        kx=3,
-        ky=3,
-    )
-
-    s_fine = np.linspace(s_values.min(), s_values.max(), n_s_fine)
-    N0_fine = np.linspace(N0_values.min(), N0_values.max(), n_N0_fine)
-
-    tc_fine = spline(s_fine, N0_fine)
-    tc_fine = np.clip(tc_fine, 0.0, None)
-
-    N0_grid_fine, s_grid_fine = np.meshgrid(N0_fine, s_fine)
-
-    return N0_grid_fine, s_grid_fine, tc_fine
+# ============================================================
+# Frontera empírica y ajuste físico
+# ============================================================
 
 def estimate_empirical_boundary_from_tc(
     N0_values,
     s_values,
-    tc_matrix,
+    tc_matrix_clean,
     tc_threshold=0.05,
-    zero_threshold=1e-8,
 ):
     """
-    Estima la frontera empírica de transición desde tc_matrix.
+    Estima la frontera empírica desde una matriz ya limpiada.
 
-    Para cada N0:
-    - limpia la curva tc(s), imponiendo que cuando tc llega a 0 no vuelve a subir
-    - busca la transición tc > tc_threshold -> tc <= tc_threshold
-    - interpola linealmente la posición de la frontera
-
-    Devuelve:
-        boundary_N0, boundary_s
+    Para cada N0 busca la transición:
+        t_c > tc_threshold  ->  t_c <= tc_threshold
     """
-    tc_clean = clean_tc_matrix_after_zero(
-        tc_matrix,
-        zero_threshold=zero_threshold,
-    )
-
     boundary_N0 = []
     boundary_s = []
 
     for j, N0 in enumerate(N0_values):
-        tc_col = tc_clean[:, j]
-
+        tc_col = tc_matrix_clean[:, j]
         active = tc_col > tc_threshold
 
-        # Si nunca hay cooperación transitoria
         if not np.any(active):
             continue
 
-        # Si siempre hay cooperación transitoria en el rango simulado,
-        # la frontera está fuera del rango: no se dibuja.
         if np.all(active):
             continue
 
-        active_indices = np.where(active)[0]
-        last_active = active_indices.max()
+        last_active = np.where(active)[0].max()
 
         if last_active >= len(s_values) - 1:
             continue
@@ -960,30 +923,174 @@ def estimate_empirical_boundary_from_tc(
         boundary_N0.append(N0)
         boundary_s.append(s_boundary)
 
-    return np.array(boundary_N0), np.array(boundary_s), tc_clean
+    return np.array(boundary_N0), np.array(boundary_s)
 
-def fit_inverse_boundary(boundary_N0, boundary_s):
+
+def fit_inverse_boundary(boundary_N0, boundary_s, fit_offset=False):
     """
-    Ajusta una frontera del tipo
+    Ajusta la frontera empírica.
 
+    Por defecto:
         s = A / N0
 
-    que es la forma física esperada por el argumento neutral/asintótico.
+    Si fit_offset=True:
+        s = A / (N0 + B)
     """
-    def model(N0, A):
-        return A / N0
+    boundary_N0 = np.asarray(boundary_N0, dtype=float)
+    boundary_s = np.asarray(boundary_s, dtype=float)
 
-    popt, pcov = curve_fit(
-        model,
+    if len(boundary_N0) < 2:
+        raise ValueError("No hay suficientes puntos para ajustar la frontera.")
+
+    if not fit_offset:
+        def model(N0, A):
+            return A / N0
+
+        popt, _ = curve_fit(
+            model,
+            boundary_N0,
+            boundary_s,
+            p0=[1.0],
+            bounds=(0.0, np.inf),
+            maxfev=10000,
+        )
+        return popt[0], 0.0
+
+    def model_offset(N0, A, B):
+        return A / (N0 + B)
+
+    popt, _ = curve_fit(
+        model_offset,
         boundary_N0,
         boundary_s,
-        p0=[1.0],
-        bounds=(0.0, np.inf),
+        p0=[1.0, 0.0],
+        bounds=([0.0, -10.0], [np.inf, 50.0]),
         maxfev=10000,
     )
+    return popt[0], popt[1]
 
-    A_fit = popt[0]
-    return A_fit
+
+def inverse_boundary_curve(N0_values, A, B=0.0):
+    return A / (N0_values + B)
+
+
+def empirical_sc_for_N0(
+    N0,
+    N0_values,
+    s_values,
+    tc_matrix_clean,
+    tc_threshold=0.05,
+):
+    """
+    Valor crítico s_c para un N0 concreto, calculado directamente
+    desde su curva t_c(s). Esto se usa para Fig. 2b.
+    """
+    if N0 not in N0_values:
+        return None
+
+    j = np.where(N0_values == N0)[0][0]
+    tc_col = tc_matrix_clean[:, j]
+    active = tc_col > tc_threshold
+
+    if not np.any(active):
+        return None
+
+    if np.all(active):
+        return None
+
+    last_active = np.where(active)[0].max()
+
+    if last_active >= len(s_values) - 1:
+        return None
+
+    s1 = s_values[last_active]
+    s2 = s_values[last_active + 1]
+    tc1 = tc_col[last_active]
+    tc2 = tc_col[last_active + 1]
+
+    if np.isclose(tc1, tc2):
+        return 0.5 * (s1 + s2)
+
+    return s1 + (tc_threshold - tc1) * (s2 - s1) / (tc2 - tc1)
+
+
+# ============================================================
+# Preparación común para Fig. 2 y Fig. 2b
+# ============================================================
+
+def get_fig2_prepared_data(
+    cache_filename,
+    use_cache=True,
+    force_recompute=False,
+    clean_for_plot=True,
+    zero_threshold=0.05,
+    tc_threshold=0.05,
+):
+    """
+    Carga/calcula Fig. 2 y devuelve tanto la matriz cruda como la limpia.
+
+    Fig. 2 y Fig. 2b deben usar esta función para ser consistentes.
+    """
+    total_start = time.perf_counter()
+
+    if use_cache and (not force_recompute) and os.path.exists(cache_filename):
+        N0_values, s_values, tc_matrix_raw, timing_matrix = load_figure_2_results_txt(
+            cache_filename
+        )
+    else:
+        N0_values, s_values, tc_matrix_raw, timing_matrix = scan_cooperation_time(
+            N0_values=np.arange(2, 40, 2),
+            s_values=np.linspace(0.02, 0.4, 60),
+            n_runs=1000,
+        )
+
+        total_elapsed_so_far = time.perf_counter() - total_start
+        save_figure_2_results_txt(
+            filename=cache_filename,
+            N0_values=N0_values,
+            s_values=s_values,
+            tc_matrix=tc_matrix_raw,
+            timing_matrix=timing_matrix,
+            total_elapsed=total_elapsed_so_far,
+        )
+
+    if clean_for_plot:
+        tc_matrix_plot = clean_tc_matrix_physical(
+            tc_matrix_raw,
+            zero_threshold=zero_threshold,
+        )
+    else:
+        tc_matrix_plot = np.array(tc_matrix_raw, copy=True)
+
+    boundary_N0, boundary_s = estimate_empirical_boundary_from_tc(
+        N0_values=N0_values,
+        s_values=s_values,
+        tc_matrix_clean=tc_matrix_plot,
+        tc_threshold=tc_threshold,
+    )
+
+    if len(boundary_N0) >= 2:
+        A_fit, B_fit = fit_inverse_boundary(
+            boundary_N0,
+            boundary_s,
+            fit_offset=False,
+        )
+    else:
+        A_fit, B_fit = np.nan, 0.0
+
+    return {
+        "N0_values": N0_values,
+        "s_values": s_values,
+        "tc_matrix_raw": tc_matrix_raw,
+        "tc_matrix_plot": tc_matrix_plot,
+        "timing_matrix": timing_matrix,
+        "boundary_N0": boundary_N0,
+        "boundary_s": boundary_s,
+        "A_fit": A_fit,
+        "B_fit": B_fit,
+    }
+
+
 # ============================================================
 # Fig. 2
 # ============================================================
@@ -992,46 +1099,40 @@ def reproduce_figure_2(
     use_cache=True,
     force_recompute=False,
     cache_filename="figure_2_results.txt",
-    clean_after_zero=True,
-    zero_threshold=1e-8,
+    clean_for_plot=True,
+    zero_threshold=0.05,
+    tc_threshold=0.05,
     save_filename="figure_2.png",
+    show_boundary_points=False,
 ):
     """
-    Fig. 2:
-    - mapa de color desde tus simulaciones guardadas
-    - líneas de referencia del paper
+    Fig. 2 físicamente consistente.
+
+    - Mapa de color: t_c limpiado con criterio físico mínimo.
+    - Puntos negros opcionales: frontera empírica extraída de esa misma matriz.
+    - Línea sólida: ajuste empírico s = A/N0.
+    - Línea discontinua: predicción teórica s = A_theory/N0,
+      con A_theory = p/(1 + p x0) para p=10, x0=0.5.
     """
     total_start = time.perf_counter()
 
-    if use_cache and (not force_recompute) and os.path.exists(cache_filename):
-        N0_values, s_values, tc_matrix, timing_matrix = load_figure_2_results_txt(
-            cache_filename
-        )
-    else:
-        N0_values, s_values, tc_matrix, timing_matrix = scan_cooperation_time(
-            N0_values=np.arange(2, 40, 2),
-            s_values=np.linspace(0.02, 0.4, 60),
-            n_runs=1000,
-        )
+    data = get_fig2_prepared_data(
+        cache_filename=cache_filename,
+        use_cache=use_cache,
+        force_recompute=force_recompute,
+        clean_for_plot=clean_for_plot,
+        zero_threshold=zero_threshold,
+        tc_threshold=tc_threshold,
+    )
 
-        total_elapsed_so_far = time.perf_counter() - total_start
-
-        save_figure_2_results_txt(
-            filename=cache_filename,
-            N0_values=N0_values,
-            s_values=s_values,
-            tc_matrix=tc_matrix,
-            timing_matrix=timing_matrix,
-            total_elapsed=total_elapsed_so_far,
-        )
-
-    if clean_after_zero:
-        tc_matrix_plot = clean_tc_matrix_after_zero(
-            tc_matrix,
-            zero_threshold=zero_threshold,
-        )
-    else:
-        tc_matrix_plot = tc_matrix
+    N0_values = data["N0_values"]
+    s_values = data["s_values"]
+    tc_matrix_plot = data["tc_matrix_plot"]
+    timing_matrix = data["timing_matrix"]
+    boundary_N0 = data["boundary_N0"]
+    boundary_s = data["boundary_s"]
+    A_fit = data["A_fit"]
+    B_fit = data["B_fit"]
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
@@ -1066,54 +1167,37 @@ def reproduce_figure_2(
     ax.set_ylabel(r"Selection strength $s$")
     ax.set_title(r"Dependence of $t_c$ on $s$ and $N_0$")
 
-    # --------------------------------------------------------
-    # Frontera empírica desde tus simulaciones
-    # --------------------------------------------------------
-
-    boundary_N0, boundary_s, tc_matrix_plot = estimate_empirical_boundary_from_tc(
-        N0_values=N0_values,
-        s_values=s_values,
-        tc_matrix=tc_matrix,
-        tc_threshold=0.05,
-        zero_threshold=zero_threshold,
-    )
-
-    # Puntos de frontera extraídos de la matriz
-    ax.scatter(
-        boundary_N0,
-        boundary_s,
-        color="black",
-        s=25,
-        alpha=0.8,
-        label="_nolegend_",
-    )
-
-    # Ajuste físico s = A / N0
-    A_fit = fit_inverse_boundary(boundary_N0, boundary_s)
+    if show_boundary_points and len(boundary_N0) > 0:
+        ax.scatter(
+            boundary_N0,
+            boundary_s,
+            color="black",
+            s=22,
+            alpha=0.75,
+            zorder=5,
+            label="_nolegend_",
+        )
 
     N_line = np.linspace(N0_values.min(), N0_values.max(), 1000)
-    s_fit = A_fit / N_line
+    handles = []
 
-    mask_fit = (s_fit >= s_values.min()) & (s_fit <= s_values.max())
+    if np.isfinite(A_fit):
+        s_fit = inverse_boundary_curve(N_line, A_fit, B_fit)
+        mask_fit = (s_fit >= s_values.min()) & (s_fit <= s_values.max())
 
-    solid_line, = ax.plot(
-        N_line[mask_fit],
-        s_fit[mask_fit],
-        "k-",
-        linewidth=2.2,
-        label=fr"Empirical boundary, $sN_0 \approx {A_fit:.2f}$",
-    )
-
-    # --------------------------------------------------------
-    # Línea teórica del paper
-    # --------------------------------------------------------
+        solid_line, = ax.plot(
+            N_line[mask_fit],
+            s_fit[mask_fit],
+            "k-",
+            linewidth=2.2,
+            label=fr"Empirical boundary, $sN_0 \approx {A_fit:.2f}$",
+        )
+        handles.append(solid_line)
 
     p_theory = 10.0
     x0_theory = 0.5
-
     A_theory = p_theory / (1.0 + p_theory * x0_theory)
     s_theory = A_theory / N_line
-
     mask_theory = (s_theory >= s_values.min()) & (s_theory <= s_values.max())
 
     dashed_line, = ax.plot(
@@ -1123,11 +1207,14 @@ def reproduce_figure_2(
         linewidth=2.0,
         label=fr"Theory, $sN_0 \approx {A_theory:.2f}$",
     )
+    handles.append(dashed_line)
 
-    ax.legend(
-        handles=[solid_line, dashed_line],
-        loc="upper right",
-    )
+    ax.set_xlim(N0_values.min() - dN / 2, N0_values.max() + dN / 2)
+    ax.set_ylim(s_values.min(), s_values.max())
+    ax.set_xticks([5, 10, 15, 20, 25, 30, 35])
+    ax.set_yticks([0.02, 0.1, 0.2, 0.3, 0.4])
+
+    ax.legend(handles=handles, loc="upper right")
 
     fig.tight_layout()
     fig.savefig(save_filename, dpi=1200, bbox_inches="tight")
@@ -1136,31 +1223,51 @@ def reproduce_figure_2(
     total_elapsed = time.perf_counter() - total_start
     print(f"Tiempo total Fig. 2: {format_seconds(total_elapsed)}")
 
-    return N0_values, s_values, tc_matrix_plot, timing_matrix
+    return (
+        N0_values,
+        s_values,
+        tc_matrix_plot,
+        timing_matrix,
+        boundary_N0,
+        boundary_s,
+        A_fit,
+    )
+
+
+# ============================================================
+# Fig. 2b
+# ============================================================
 
 def reproduce_figure_2b_from_txt(
     cache_filename="figure_2_results.txt",
     selected_N0_values=(4, 6, 8),
     save_filename="figure_2b.png",
-    clean_after_zero=True,
-    zero_threshold=1e-8,
+    clean_for_plot=True,
+    zero_threshold=0.05,
+    tc_threshold=0.05,
+    show_transition_lines=True,
 ):
     """
-    Fig. 2b:
-    Lee figure_2_results.txt y representa t_c frente a s
-    para N0 = 4, 6, 8 por defecto.
+    Fig. 2b: t_c frente a s para varios N0.
 
-    No recomputa simulaciones.
-
-    Si clean_after_zero=True, elimina picos espurios después
-    de que t_c haya caído a cero.
+    Las líneas verticales marcan s_c(N0) calculado directamente desde
+    cada curva t_c(s), no desde el ajuste global.
     """
-
-    N0_values, s_values, tc_matrix, timing_matrix = load_figure_2_results_txt(
-        cache_filename
+    data = get_fig2_prepared_data(
+        cache_filename=cache_filename,
+        use_cache=True,
+        force_recompute=False,
+        clean_for_plot=clean_for_plot,
+        zero_threshold=zero_threshold,
+        tc_threshold=tc_threshold,
     )
 
-    plt.figure(figsize=(7, 4))
+    N0_values = data["N0_values"]
+    s_values = data["s_values"]
+    tc_matrix_plot = data["tc_matrix_plot"]
+    timing_matrix = data["timing_matrix"]
+
+    fig, ax = plt.subplots(figsize=(7, 4))
 
     for N0 in selected_N0_values:
         if N0 not in N0_values:
@@ -1169,33 +1276,44 @@ def reproduce_figure_2b_from_txt(
 
         j = np.where(N0_values == N0)[0][0]
 
-        tc_values = tc_matrix[:, j]
-
-        if clean_after_zero:
-            tc_values = enforce_zero_after_first_zero(
-                tc_values,
-                zero_threshold=zero_threshold,
-            )
-
-        plt.plot(
+        line, = ax.plot(
             s_values,
-            tc_values,
+            tc_matrix_plot[:, j],
             marker="o",
             linewidth=2,
             markersize=4,
             label=fr"$N_0={N0}$",
         )
 
-    plt.xlabel(r"Selection strength $s$")
-    plt.ylabel(r"Cooperation time $t_c$")
-    plt.title(r"$t_c$ vs $s$ for different $N_0$")
-    plt.legend()
-    plt.grid(alpha=0.25)
-    plt.tight_layout()
-    plt.savefig(save_filename, dpi=1200, bbox_inches="tight")
+        if show_transition_lines:
+            s_c = empirical_sc_for_N0(
+                N0=N0,
+                N0_values=N0_values,
+                s_values=s_values,
+                tc_matrix_clean=tc_matrix_plot,
+                tc_threshold=tc_threshold,
+            )
+
+            if s_c is not None and s_values.min() <= s_c <= s_values.max():
+                ax.axvline(
+                    s_c,
+                    linestyle=":",
+                    linewidth=1.3,
+                    alpha=0.75,
+                    color=line.get_color(),
+                )
+
+    ax.set_xlabel(r"Selection strength $s$")
+    ax.set_ylabel(r"Cooperation time $t_c$")
+    ax.set_title(r"$t_c$ vs $s$ for different $N_0$")
+    ax.legend()
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(save_filename, dpi=1200, bbox_inches="tight")
     plt.show()
 
-    return N0_values, s_values, tc_matrix, timing_matrix
+    return N0_values, s_values, tc_matrix_plot, timing_matrix
+
 
 # ============================================================
 # Main
@@ -1217,32 +1335,31 @@ if __name__ == "__main__":
     """
 
     # --------------------------------------------------------
-    # Reproduce Fig. 2
+    # Reproduce Fig. 2 y Fig. 2b
     # --------------------------------------------------------
-    # Puede tardar bastante. Descomentá para correrla.
 
-    
-    N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2(
-    use_cache=True,
-    force_recompute=False,
-    cache_filename="figure_2_results_N0_2_40_s60_runs1000.txt",
-    clean_after_zero=True,
-    zero_threshold=1e-8,
-    save_filename="figure_2.png",
+    filename_2 = "figure_2_results_N0_2_40_s60_runs1000.txt"
+
+    N0_values, s_values, tc_matrix, timing_matrix, boundary_N0, boundary_s, A_fit = reproduce_figure_2(
+        use_cache=True,
+        force_recompute=False,
+        cache_filename=filename_2,
+        clean_for_plot=True,
+        zero_threshold=0.05,
+        tc_threshold=0.05,
+        save_filename="figure_2.png",
+        show_boundary_points=False,
     )
-    """
-    # Reproduce Fig. 2b
-    filename_2b = "figure_2_results_N0_2_40_s60_runs1000.txt"
 
     N0_values, s_values, tc_matrix, timing_matrix = reproduce_figure_2b_from_txt(
-    cache_filename=filename_2b,
-    selected_N0_values=(4, 6, 8),
-    save_filename="figure_2b_2.png",
-    clean_after_zero=True,
-    zero_threshold=1e-8,
+        cache_filename=filename_2,
+        selected_N0_values=(4, 6, 8),
+        save_filename="figure_2b_2.png",
+        clean_for_plot=True,
+        zero_threshold=0.05,
+        tc_threshold=0.05,
+        show_transition_lines=True,
     )
-    """
 
     program_elapsed = time.perf_counter() - program_start
-
     print(f"\nTiempo total de ejecución del script: {format_seconds(program_elapsed)}")
