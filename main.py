@@ -6,14 +6,12 @@ import matplotlib.colors as mcolors
 from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
 from tqdm import tqdm
-       
 
 # ============================================================
-# Utilidades de tiempo
+# Timer helpers
 # ============================================================
 
 def format_seconds(seconds):
-    """Formato legible para tiempos."""
     if seconds < 60:
         return f"{seconds:.2f} s"
 
@@ -26,9 +24,7 @@ def format_seconds(seconds):
 
 
 # ============================================================
-# Modelo del paper:
-# Evolutionary game theory in growing populations
-# Cooperadores A vs defectores B
+# Functions for the model
 # ============================================================
 
 def fitness_A(x, b=3.0, c=1.0, s=0.05): # f_A(x)
@@ -48,7 +44,7 @@ def death_rate_global(N, K=100.0): # d(N)
 
 
 # ============================================================
-# Simulación estocástica Gillespie
+# Gillespie
 # ============================================================
 
 def gillespie_one_run(
@@ -62,21 +58,6 @@ def gillespie_one_run(
     t_max=8.0,
     rng=None,
 ):
-    """
-    Simula una trayectoria estocástica con eventos:
-
-    A -> A + 1
-    B -> B + 1
-    A -> A - 1
-    B -> B - 1
-
-    Las tasas son:
-
-    nacimiento A: g(x) * f_A(x) * A
-    nacimiento B: g(x) * f_B(x) * B
-    muerte A:     d(N) * A
-    muerte B:     d(N) * B
-    """
     if rng is None:
         rng = np.random.default_rng()
 
@@ -134,10 +115,6 @@ def gillespie_one_run(
 
 
 def interpolate_trajectory(times, As, Bs, t_grid):
-    """
-    Interpola una trayectoria de saltos a un grid común.
-    Usa valor constante hacia adelante.
-    """
     idx = np.searchsorted(times, t_grid, side="right") - 1
     idx = np.clip(idx, 0, len(times) - 1)
 
@@ -170,16 +147,6 @@ def ensemble_simulation(
     show_progress=True,
     progress_desc=None,
 ):
-    """
-    Promedio de ensamble con tqdm.
-
-    Importante:
-    El paper promedia la fracción de cooperadores como
-
-        x_promedio = sum_i A_i / sum_i N_i
-
-    no como promedio aritmético simple de x_i.
-    """
     rng = np.random.default_rng(seed)
     t_grid = np.linspace(0, t_max, n_points)
 
@@ -241,7 +208,7 @@ def ensemble_simulation(
 
 
 # ============================================================
-# Solución determinista
+# Deterministic solution
 # ============================================================
 
 def deterministic_solution(
@@ -256,8 +223,6 @@ def deterministic_solution(
     n_points=400,
 ):
     """
-    Ecuaciones deterministas del paper:
-
     dx/dt = -s(1 + p x) x(1 - x)
 
     dN/dt = [(1 + p x)<f> - N/K] N
@@ -289,16 +254,10 @@ def deterministic_solution(
 
 
 # ============================================================
-# Tiempo de cooperación
+# Cooperation time tc
 # ============================================================
 
 def cooperation_time(t, x):
-    """
-    Define t_c como el tiempo durante el cual x(t) permanece
-    por encima de x(0), luego de haber aumentado.
-
-    Si nunca sube respecto de x(0), devuelve 0.
-    """
     x_initial = x[0]
 
     if np.all(x <= x_initial + 1e-12):
@@ -315,7 +274,7 @@ def cooperation_time(t, x):
 
 
 # ============================================================
-# Guardado/carga de resultados Fig. 1 en .txt
+# Saving/loading results for Fig. 1 in .txt
 # ============================================================
 
 def save_figure_1_results_txt(
@@ -326,21 +285,12 @@ def save_figure_1_results_txt(
     params,
     total_elapsed,
 ):
-    """
-    Guarda los resultados de Fig. 1 en un .txt.
-
-    Columnas:
-    N0, t, mean_N_stochastic, mean_x_stochastic, N_deterministic, x_deterministic, elapsed_for_N0
-    """
     rows = []
 
     for N0 in sorted(results.keys()):
         t, mean_N, mean_x = results[N0]
         td, Nd, xd = deterministic_results[N0]
         elapsed = timings.get(N0, np.nan)
-
-        if not np.allclose(t, td):
-            raise ValueError(f"El grid temporal estocástico y determinista no coincide para N0={N0}")
 
         for k in range(len(t)):
             rows.append(
@@ -377,12 +327,6 @@ def save_figure_1_results_txt(
 
 
 def load_figure_1_results_txt(filename):
-    """
-    Carga resultados previamente guardados de Fig. 1.
-
-    Devuelve:
-    results, deterministic_results, timings
-    """
     data = np.loadtxt(filename)
 
     results = {}
@@ -411,7 +355,7 @@ def load_figure_1_results_txt(filename):
 
 
 # ============================================================
-# Figura 1 aproximada
+# Figura 1
 # ============================================================
 
 def reproduce_figure_1(
@@ -419,22 +363,6 @@ def reproduce_figure_1(
     force_recompute=False,
     cache_filename="figure_1_results.txt",
 ):
-    """
-    Fig. 1 modificada:
-
-    Fig. 1a:
-        Subplot de 3 figuras, una para cada N0.
-        En cada subplot compara N(t) estocástico vs N(t) determinista.
-        Una única leyenda global.
-
-    Fig. 1b:
-        Tamaño poblacional N(t) vs tiempo para las estocásticas.
-
-    Fig. 1c:
-        Fracción de cooperadores x(t), equivalente a la anterior Fig. 1b.
-
-    Además guarda/carga resultados en un .txt para evitar recomputar.
-    """
     total_start = time.perf_counter()
 
     params = dict(
@@ -500,9 +428,6 @@ def reproduce_figure_1(
 
     # --------------------------------------------------------
     # Fig. 1a:
-    # Subplot de 3 figuras, una por N0.
-    # Compara stochastic vs determinista para N(t).
-    # Una única leyenda.
     # --------------------------------------------------------
     fig, axes = plt.subplots(
         2,
@@ -512,8 +437,6 @@ def reproduce_figure_1(
         sharey=True,
     )
 
-    # axes_flat[0], axes_flat[1], axes_flat[2] -> subplots para N0
-    # axes_flat[3] -> panel solo para la leyenda
     axes_flat = axes.ravel()
 
     legend_handles = []
@@ -551,12 +474,10 @@ def reproduce_figure_1(
         ax.set_ylabel("Population size N")
         ax.grid(alpha=0.25)
 
-        # Guardamos los handles solo una vez
         if i == 0:
             legend_handles = [line_stoch, line_det]
             legend_labels = ["Stochastic", "Deterministic"]
 
-    # Cuarto panel: solo leyenda
     legend_ax = axes_flat[3]
     legend_ax.axis("off")
 
@@ -576,7 +497,6 @@ def reproduce_figure_1(
 
     # --------------------------------------------------------
     # Fig. 1b:
-    # Tamaño poblacional N(t) vs tiempo para las estocásticas.
     # --------------------------------------------------------
     plt.figure(figsize=(7, 4))
 
@@ -596,7 +516,6 @@ def reproduce_figure_1(
 
     # --------------------------------------------------------
     # Fig. 1c:
-    # Fracción de cooperadores x(t).
     # --------------------------------------------------------
     plt.figure(figsize=(7, 4))
 
@@ -621,7 +540,6 @@ def reproduce_figure_1(
                 color=color,
             )
 
-    # Agrego solución determinista N0=4 como en el código anterior
     td, Nd, xd = deterministic_results[4]
 
     plt.plot(td, xd, "k--", linewidth=2, label=r"Deterministic $N_0=4$")
@@ -644,7 +562,7 @@ def reproduce_figure_1(
     return results, deterministic_results, timings
 
 # ============================================================
-# Guardado/carga de resultados Fig. 2 en .txt
+# Saving/loading results for Fig. 2 in .txt
 # ============================================================
 
 def save_figure_2_results_txt(
@@ -655,12 +573,6 @@ def save_figure_2_results_txt(
     timing_matrix,
     total_elapsed,
 ):
-    """
-    Guarda los resultados de Fig. 2 en un .txt.
-
-    Columnas:
-    s, N0, tc, elapsed_for_combination
-    """
     rows = []
 
     for i, s in enumerate(s_values):
@@ -687,12 +599,6 @@ def save_figure_2_results_txt(
 
 
 def load_figure_2_results_txt(filename):
-    """
-    Carga resultados previamente guardados de Fig. 2.
-
-    Devuelve:
-    N0_values, s_values, tc_matrix, timing_matrix
-    """
     data = np.loadtxt(filename)
 
     s_values = np.unique(data[:, 0])
@@ -714,7 +620,7 @@ def load_figure_2_results_txt(filename):
 
     return N0_values, s_values, tc_matrix, timing_matrix
 # ============================================================
-# Simulación para Fig. 2
+# Simulation scan for Fig. 2
 # ============================================================
 
 def scan_cooperation_time(
@@ -730,14 +636,6 @@ def scan_cooperation_time(
     n_points=300,
     seed=999,
 ):
-    """
-    Escaneo para Fig. 2 con tqdm.
-
-    Requiere que ya tengas definidas estas funciones en el script:
-    - ensemble_simulation
-    - cooperation_time
-    - format_seconds
-    """
     total_start = time.perf_counter()
 
     tc_matrix = np.zeros((len(s_values), len(N0_values)))
@@ -794,23 +692,11 @@ def scan_cooperation_time(
 
     return N0_values, s_values, tc_matrix, timing_matrix
 
-
-
 # ============================================================
-# Limpieza física de tc_matrix
+# Cleaning cooperation time curves
 # ============================================================
 
 def clean_tc_curve_physical(tc_values, zero_threshold=0.05):
-    """
-    Limpia una curva t_c(s) para un N0 fijo.
-
-    Impone:
-    1. Valores t_c <= zero_threshold se consideran cero.
-    2. t_c no puede aumentar al aumentar s.
-    3. Cuando t_c llega a cero, permanece cero para s mayores.
-
-    Esto elimina picos espurios debidos a ruido estadístico.
-    """
     tc_clean = np.array(tc_values, copy=True, dtype=float)
 
     tc_clean[tc_clean <= zero_threshold] = 0.0
@@ -828,12 +714,6 @@ def clean_tc_curve_physical(tc_values, zero_threshold=0.05):
 
 
 def clean_tc_matrix_physical(tc_matrix, zero_threshold=0.05):
-    """
-    Aplica clean_tc_curve_physical a cada columna de tc_matrix.
-
-    Filas: valores de s.
-    Columnas: valores de N0.
-    """
     tc_clean = np.array(tc_matrix, copy=True, dtype=float)
 
     for j in range(tc_clean.shape[1]):
@@ -845,23 +725,19 @@ def clean_tc_matrix_physical(tc_matrix, zero_threshold=0.05):
     return tc_clean
 
 
-# Alias por compatibilidad con código anterior.
+#Earlier versions
 def enforce_zero_after_first_zero(tc_values, zero_threshold=0.05):
     return clean_tc_curve_physical(tc_values, zero_threshold=zero_threshold)
-
 
 def clean_tc_matrix_after_zero(tc_matrix, zero_threshold=0.05):
     return clean_tc_matrix_physical(tc_matrix, zero_threshold=zero_threshold)
 
 
 # ============================================================
-# Colormap azul
+# Colormap
 # ============================================================
 
 def paper_like_blues(vmax=8.0):
-    """
-    Colormap azul con escala lineal.
-    """
     colors = [
         (0.00 / vmax, "#f2f7fb"),
         (0.25 / vmax, "#d6e6f2"),
@@ -877,7 +753,7 @@ def paper_like_blues(vmax=8.0):
 
 
 # ============================================================
-# Frontera empírica y ajuste físico
+# Bounders
 # ============================================================
 
 def estimate_empirical_boundary_from_tc(
@@ -886,12 +762,6 @@ def estimate_empirical_boundary_from_tc(
     tc_matrix_clean,
     tc_threshold=0.05,
 ):
-    """
-    Estima la frontera empírica desde una matriz ya limpiada.
-
-    Para cada N0 busca la transición:
-        t_c > tc_threshold  ->  t_c <= tc_threshold
-    """
     boundary_N0 = []
     boundary_s = []
 
@@ -927,20 +797,8 @@ def estimate_empirical_boundary_from_tc(
 
 
 def fit_inverse_boundary(boundary_N0, boundary_s, fit_offset=False):
-    """
-    Ajusta la frontera empírica.
-
-    Por defecto:
-        s = A / N0
-
-    Si fit_offset=True:
-        s = A / (N0 + B)
-    """
     boundary_N0 = np.asarray(boundary_N0, dtype=float)
     boundary_s = np.asarray(boundary_s, dtype=float)
-
-    if len(boundary_N0) < 2:
-        raise ValueError("No hay suficientes puntos para ajustar la frontera.")
 
     if not fit_offset:
         def model(N0, A):
@@ -981,10 +839,6 @@ def empirical_sc_for_N0(
     tc_matrix_clean,
     tc_threshold=0.05,
 ):
-    """
-    Valor crítico s_c para un N0 concreto, calculado directamente
-    desde su curva t_c(s). Esto se usa para Fig. 2b.
-    """
     if N0 not in N0_values:
         return None
 
@@ -1015,7 +869,7 @@ def empirical_sc_for_N0(
 
 
 # ============================================================
-# Preparación común para Fig. 2 y Fig. 2b
+# Data preparation for Fig. 2
 # ============================================================
 
 def get_fig2_prepared_data(
@@ -1026,11 +880,6 @@ def get_fig2_prepared_data(
     zero_threshold=0.05,
     tc_threshold=0.05,
 ):
-    """
-    Carga/calcula Fig. 2 y devuelve tanto la matriz cruda como la limpia.
-
-    Fig. 2 y Fig. 2b deben usar esta función para ser consistentes.
-    """
     total_start = time.perf_counter()
 
     if use_cache and (not force_recompute) and os.path.exists(cache_filename):
@@ -1105,15 +954,6 @@ def reproduce_figure_2(
     save_filename="figure_2.png",
     show_boundary_points=False,
 ):
-    """
-    Fig. 2 físicamente consistente.
-
-    - Mapa de color: t_c limpiado con criterio físico mínimo.
-    - Puntos negros opcionales: frontera empírica extraída de esa misma matriz.
-    - Línea sólida: ajuste empírico s = A/N0.
-    - Línea discontinua: predicción teórica s = A_theory/N0,
-      con A_theory = p/(1 + p x0) para p=10, x0=0.5.
-    """
     total_start = time.perf_counter()
 
     data = get_fig2_prepared_data(
@@ -1247,12 +1087,6 @@ def reproduce_figure_2b_from_txt(
     tc_threshold=0.05,
     show_transition_lines=True,
 ):
-    """
-    Fig. 2b: t_c frente a s para varios N0.
-
-    Las líneas verticales marcan s_c(N0) calculado directamente desde
-    cada curva t_c(s), no desde el ajuste global.
-    """
     data = get_fig2_prepared_data(
         cache_filename=cache_filename,
         use_cache=True,
@@ -1270,10 +1104,6 @@ def reproduce_figure_2b_from_txt(
     fig, ax = plt.subplots(figsize=(7, 4))
 
     for N0 in selected_N0_values:
-        if N0 not in N0_values:
-            print(f"Aviso: N0={N0} no está en {cache_filename}. Se ignora.")
-            continue
-
         j = np.where(N0_values == N0)[0][0]
 
         line, = ax.plot(
@@ -1325,14 +1155,13 @@ if __name__ == "__main__":
     # --------------------------------------------------------
     # Reproduce Fig. 1
     # --------------------------------------------------------
-
-    """
+    
     results_fig1, deterministic_fig1, timings_fig1 = reproduce_figure_1(
         use_cache=True,
         force_recompute=False,
         cache_filename="figure_1_results.txt",
     )
-    """
+   
 
     # --------------------------------------------------------
     # Reproduce Fig. 2 y Fig. 2b
